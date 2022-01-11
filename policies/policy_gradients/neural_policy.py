@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -16,4 +17,4 @@ class NeuralPolicy(nn.Module):
 
     def forward(self, inputs):
         x = F.elu(self.input_layer(inputs))
-        return F.sigmoid(self.output_layer(x))
+        return torch.sigmoid(self.output_layer(x))
