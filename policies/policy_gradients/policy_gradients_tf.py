@@ -1,48 +1,31 @@
 import gym
-import torch
 import numpy as np
-import torch.nn as nn
-import torch.nn.functional as F
+import tensorflow as tf
+from tensorflow import keras
 from typing import Callable
-from gym import wrappers
 from gym.wrappers.time_limit import TimeLimit
 
 from util_functions import play_multiple_episodes, discount_and_normalize_rewards
 
+# Create the model using Keras
+model = keras.models.Sequential(
+    [
+        keras.layers.Dense(5, activation="elu", input_shape=[4]),
+        keras.layers.Dense(1, activation="sigmoid"),
+    ]
+)
 
-class NeuralPolicy(nn.Module):
-    """
-    Simple neural network policy chooser
-    """
-
-    def __init__(self):
-        super(NeuralPolicy, self).__init__()
-
-        # 4 being the observation space (cart position, velocity, pole angle and angular velocity)
-        self.input_layer = nn.Linear(4, 5)
-        self.output_layer = nn.Linear(5, 1)
-
-    def forward(self, inputs):
-        x = F.elu(self.input_layer(inputs))
-        return torch.sigmoid(self.output_layer(x))
-
-
-# Setup training constants
 n_epochs = 150
 episodes_per_epoch = 10
 max_steps = 200
 discount_factor = 0.95
+optimizer = keras.optimizers.Adam(lr=0.01)
+loss_fn = keras.losses.BinaryCrossentropy()
+
 env = gym.make("CartPole-v1")
 
-model = NeuralPolicy()
-trainable_params = [p for p in model.parameters() if p.requires_grad]
-optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-loss_fn = F.binary_cross_entropy
 
-
-def play_one_step(
-    env: TimeLimit, obs: np.ndarray, model: NeuralPolicy, loss_fn: Callable
-):
+def play_one_step(env, obs, model, loss_fn):
     """
     Performs one action in the game computing the gradients that would make the chosen action the most likely.
 
@@ -67,38 +50,36 @@ def play_one_step(
         done: Whether the game has ended
         grads: The gradients that would have made the chose action even more likely
     """
-    # Get the probability of going left by feeding the network policy with the current state of the environment
-    left_proba = model(torch.unsqueeze(torch.from_numpy(obs), dim=0))
-    action = torch.rand((1, 1)) > left_proba
 
-    # The target probability of going left. This is 1. is the action is 0 (going left) or 0. if the action was
-    # 1 (going right)
-    y_target = torch.Tensor([1.0]) - action.float()
+    # Define the context in which gradient computations should be captured
+    with tf.GradientTape() as tape:
 
-    # Backprop the loss function
-    loss = loss_fn(left_proba, y_target)
-    loss.backward()
+        # Get the probability of going left by feeding the network policy with the current state of the environment
+        left_proba = model(obs[np.newaxis])
+        action = tf.random.uniform([1, 1]) > left_proba
 
-    # get gradients of loss function with respect to model's trainable params
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-    grads = [torch.clone(t.grad) for t in trainable_params]
+        # The target probability of going left. This is 1. is the action is 0 (going left) or 0. if the action was
+        # 1 (going right)
+        y_target = tf.constant([[1.0]]) - tf.cast(action, tf.float32)
 
-    # zero out the gradients to not pollute next computations
-    model.zero_grad()
+        # Compute the loss value
+        loss = tf.reduce_mean(loss_fn(y_target, left_proba))
 
-    obs, reward, done, info = env.step(int(action[0, 0].item()))
+    # Compute the gradients of loss function with respect to model's trainable params
+    grads = tape.gradient(loss, model.trainable_variables)
+
+    obs, reward, done, info = env.step(int(action[0, 0].numpy()))
 
     return obs, reward, done, grads
 
 
-# Training the neural policy
 def train(
     env: TimeLimit,
     n_epochs: int,
     episodes_per_epoch: int,
     max_steps: int,
-    model: NeuralPolicy,
-    optimizer: torch.optim.Adam,
+    model: keras.models.Model,
+    optimizer: keras.optimizers.Adam,
     loss_fn: Callable,
     discount_factor: float,
 ):
@@ -119,42 +100,34 @@ def train(
             essentially, how much do rewards in the future matter to the current step. Example with discount_factor=0.95
             rewards 13 steps into the future count half as much as intermediate rewards (0.95**13 ~= 0.5)
     """
-
     for epoch in range(n_epochs):
-
-        # Zero out the gradients from a previous epoch
-        optimizer.zero_grad()
 
         rewards, gradients = play_multiple_episodes(
             env, episodes_per_epoch, max_steps, model, play_one_step, loss_fn
         )
         discounted_rewards = discount_and_normalize_rewards(rewards, discount_factor)
 
-        # For each trainable parameter, average out the gradients corresponding to that parameter
-        for var_index in range(len(trainable_params)):
-            mean_grads = torch.mean(
-                torch.stack(
-                    [
-                        step_reward * gradients[episode_idx][step][var_index]
-                        for episode_idx, episode_rewards in enumerate(
-                            discounted_rewards
-                        )
-                        for step, step_reward in enumerate(episode_rewards)
-                    ]
-                ),
+        all_mean_gradients = []
+        for var_index in range(len(model.trainable_variables)):
+            mean_grads = tf.reduce_mean(
+                [
+                    step_reward * gradients[episode_idx][step][var_index]
+                    for episode_idx, episode_rewards in enumerate(discounted_rewards)
+                    for step, step_reward in enumerate(episode_rewards)
+                ],
                 axis=0,
             )
+            all_mean_gradients.append(mean_grads)
+        optimizer.apply_gradients(zip(all_mean_gradients, model.trainable_variables))
 
-            # Update the gradients of the current trainable parameter to be the average of gradients multiplied by the
-            # discounted rewards.
-            trainable_params[var_index].grad = mean_grads
+        # Update the gradients of the current trainable parameter to be the average of gradients multiplied by the
+        # discounted rewards
 
-        # Do gradient descent and apply the previously computed gradients
-        optimizer.step()
+        # Do gradient descent and apply the gradients
 
         # report how long on average the network is able to keep the pole upright
         print(
-            f"epoch {epoch},  mean rewards per episode {np.mean([sum(episode_reward) for episode_reward in rewards])}"
+            f"mean rewards per episode {np.mean([sum(episode_reward) for episode_reward in rewards])}"
         )
 
 
@@ -169,17 +142,15 @@ train(
     discount_factor,
 )
 
-# Running the trained neural policy
-env = wrappers.Monitor(env, "../../outputs/policy_gradients", force=True)
+# Run the trained network
 obs = env.reset()
 
 # 200 steps is the maximum for this task, after that we've won
 for step in range(200):
-    model.eval()
 
-    left_proba = model(torch.unsqueeze(torch.from_numpy(obs), dim=0))
-    action = torch.rand((1, 1)) > left_proba
-    obs, reward, done, info = env.step(int(action[0, 0].item()))
+    left_proba = model(obs[np.newaxis])
+    action = tf.random.uniform([1, 1]) > left_proba
+    obs, reward, done, info = env.step(int(action[0, 0].numpy()))
 
     if done:
         print(f"Episode finished after {step + 1} timesteps")
