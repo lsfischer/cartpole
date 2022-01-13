@@ -170,7 +170,7 @@ train(
 )
 
 # Running the trained neural policy
-env = wrappers.Monitor(env, "../../outputs/policy_gradients", force=True)
+env = wrappers.Monitor(env, "./outputs/policy_gradients", force=True)
 obs = env.reset()
 
 # 200 steps is the maximum for this task, after that we've won
