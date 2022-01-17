@@ -1,7 +1,10 @@
+import gym
 import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
+
+from util_functions import play_one_step, sample_experiences
 
 
 class DQNet(nn.Module):
@@ -25,7 +28,12 @@ class DQNet(nn.Module):
         return self.output_layer(x)
 
 
+env = gym.make("CartPole-v1")
 model = DQNet()
+batch_size = 32
+discount_factor = 0.95
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+loss_fn = F.mse_loss
 
 
 def epsilon_greedy_policy(state, epsilon=0):
@@ -52,3 +60,42 @@ def epsilon_greedy_policy(state, epsilon=0):
 
         # Choose the action the maximizes the predicted Q values for the current state
         return torch.argmax(q_values[0]).item()
+
+
+def training_step(batch_size):
+    optimizer.zero_grad()
+    experiences = sample_experiences(batch_size)
+    states, actions, rewards, next_states, dones = experiences
+
+    # maybe here we put it in eval mode (?)
+    with torch.no_grad():
+        next_q_values = model(torch.from_numpy(next_states))
+
+    max_q_values = torch.max(next_q_values, axis=1)
+
+    target_q_values = (
+        rewards + (1 - dones) * discount_factor * max_q_values.values.numpy()
+    )
+    mask = F.one_hot(torch.from_numpy(actions), 2)
+
+    # here is where we want gradient computation according to the example
+    all_q_values = model(torch.from_numpy(states))
+
+    # maybe put keepdims=True here, but then target_q_values should be of different shape?
+    q_values = torch.sum(all_q_values * mask, axis=1)
+    loss = loss_fn(torch.from_numpy(target_q_values).float(), q_values)
+    loss.backward()
+    optimizer.step()
+
+
+for episode in range(600):
+    obs = env.reset()
+    for step in range(200):
+        epsilon = max(1 - episode / 500, 0.01)
+        obs, reward, done, info = play_one_step(
+            env, obs, epsilon_greedy_policy, epsilon
+        )
+        if done:
+            break
+    if episode > 50:
+        training_step(batch_size)
