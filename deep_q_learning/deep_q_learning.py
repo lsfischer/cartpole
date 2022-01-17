@@ -63,27 +63,47 @@ def epsilon_greedy_policy(state, epsilon=0):
 
 
 def training_step(batch_size):
+    """
+    Performs a training step of the Deep Q network
+
+    It starts by sampling a batch of previous experiences from the replay buffer and computing the target
+    Q values as the immediate rewards plus the max expected discounted future rewards (assuming the agent always
+    plays optimally)
+
+    Params
+    ------
+        batch_size: The number of experiences to draw from the replay buffer
+    """
+
+    # Zero out the gradients from a previous epoch
     optimizer.zero_grad()
+
     experiences = sample_experiences(batch_size)
     states, actions, rewards, next_states, dones = experiences
 
-    # maybe here we put it in eval mode (?)
+    # Turn off gradient computation when predicting the expected future Q values
     with torch.no_grad():
         next_q_values = model(torch.from_numpy(next_states))
 
     max_q_values = torch.max(next_q_values, axis=1)
 
+    # immediate rewards plus max discounted future expected Q values
     target_q_values = (
         rewards + (1 - dones) * discount_factor * max_q_values.values.numpy()
     )
+
+    # Mask the Q values from actions not chosen from the agent
     mask = F.one_hot(torch.from_numpy(actions), 2)
 
-    # here is where we want gradient computation according to the example
+    # Predict the next Q values
     all_q_values = model(torch.from_numpy(states))
 
+    # Compute the loss between our predicted next Q values and the target Q values
     # maybe put keepdims=True here, but then target_q_values should be of different shape?
     q_values = torch.sum(all_q_values * mask, axis=1)
     loss = loss_fn(torch.from_numpy(target_q_values).float(), q_values)
+
+    # backprop & gradient descent
     loss.backward()
     optimizer.step()
 
