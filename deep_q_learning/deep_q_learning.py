@@ -8,6 +8,11 @@ from util_functions import play_one_step, sample_experiences
 
 
 class DQNet(nn.Module):
+    """
+    Network policy that takes as input an observation of the current state of the environment
+    and outputs the expected Q values for all the possible actions
+    """
+
     def __init__(self):
         super(DQNet, self).__init__()
 
@@ -108,6 +113,7 @@ def training_step(batch_size):
     optimizer.step()
 
 
+# Train the network
 for episode in range(600):
     obs = env.reset()
     for step in range(200):
